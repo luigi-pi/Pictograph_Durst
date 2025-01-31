@@ -9,10 +9,11 @@ volatile bool limSwHeadTriggered = false;
 // Direction enum and flag
 enum Direction { FORWARD, BACKWARD };
 Direction currentDirection = FORWARD; // Initialize with default direction
-uint8_t PWM_fast =70; //value in % of motor speed
-uint8_t PWM_slow =30; //value in % of motor speed
-uint8_t PWM = 20; //min value of PWM (to be changed also below)
-unsigned long zero = 0;
+uint8_t PWM_fast =80; //value in % of motor speed
+uint8_t PWM_slow =40; //value in % of motor speed
+uint8_t PWM_min = 20; //min value of PWM
+uint8_t PWM = 0; //changing value of PWM 
+unsigned long zeroRef = 0;
 uint16_t accel_interval = 10;//time in millis to change the speed in acceleration
 uint8_t speedIncrease = 5; //% of speed increase for each accel_interval
 uint16_t disengage_ls = 500;  //time in millis to disangage Limitswitch when hit
@@ -39,13 +40,13 @@ void HeadBackward(uint8_t PWM) {
 void HeadStop() {
  analogWrite(in1Head,255);
  analogWrite(in2Head, 255);
- PWM=20; 
+ PWM=PWM_min; 
 }
 
 void HeadCoast() {
  analogWrite(in1Head,0);
  analogWrite(in2Head, 0);
- PWM=20;  
+ PWM=PWM_min;  
 }
 void limSwHit() {
  HeadStop();
@@ -59,48 +60,48 @@ void limSwHit() {
 void setup() {
  Serial.begin(9600);
  //head motor
- pinMode(in1Head, OUTPUT);
- pinMode(in2Head, OUTPUT);
+  pinMode(in1Head, OUTPUT);
+  pinMode(in2Head, OUTPUT);
  //limitswitch
- pinMode(limSwHead, INPUT_PULLUP);
- attachInterrupt(digitalPinToInterrupt(limSwHead), headISR, RISING); // Trigger on HIGH signal
+  pinMode(limSwHead, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(limSwHead), headISR, RISING); // Trigger on HIGH signal
  //Buttons
   pinMode(FAST,INPUT_PULLUP);
   pinMode(UP,INPUT_PULLUP);
   pinMode(DOWN,INPUT_PULLUP);
+ PWM=PWM_min;
 }
 void loop() {
 if(limSwHeadTriggered){
   unsigned long initialMillis = millis();
-  while(millis()- initialMillis<= disengage_ls){
-    limSwHit();
+  limSwHit();
+  while(millis()- initialMillis<= disengage_ls){   
     }
-    HeadCoast()
-    limSwHeadTriggered=digitalRead(limSwHead);
+  HeadCoast();
+  limSwHeadTriggered=digitalRead(limSwHead);
 }
 // read the state of the pushbutton value, inverted due to pullup resistors:
   upState = !digitalRead(UP);
   downState = !digitalRead(DOWN);
   fastState = !digitalRead(FAST);
 
-  if (upState && !downState && (millis()- zero >= accel_interval)){
+  if (upState && !downState && (millis()- zeroRef >= accel_interval)){
     if (PWM < (fastState ? PWM_fast : PWM_slow)) {
      PWM += speedIncrease;
     }
     HeadForward(PWM);
     Serial.println("moving up");
-    zero = millis();
+    zeroRef = millis();
   } 
-  else if(!upState && downState && (millis()- zero >= accel_interval)) {
+  else if(!upState && downState && (millis()- zeroRef >= accel_interval)) {
     if (PWM < (fastState ? PWM_fast : PWM_slow)) {
      PWM += speedIncrease;
     }
     HeadBackward(PWM);
     Serial.println("moving down:");
-    zero = millis();
+    zeroRef = millis();
   }
-  
-  else{
+  else if((!upState && !downState)||(upState && downState)){
    HeadCoast();
   }
 }
