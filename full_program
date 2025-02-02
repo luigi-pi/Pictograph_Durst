@@ -1,0 +1,815 @@
+//https://github.com/duinoWitchery/hd44780/blob/master/examples/ioClass/hd44780_I2Cexp/HelloWorld/HelloWorld.ino
+//https://github.com/Stutchbury/EncoderButton/blob/main/examples/Basic/Basic.ino
+//https://www.airspayce.com/mikem/arduino/AccelStepper/classAccelStepper.html#a608b2395b64ac15451d16d0371fe13ce
+
+#include <EncoderButton.h>
+#include <Wire.h>
+#include <hd44780.h>                       // main hd44780 header
+#include <hd44780ioClass/hd44780_I2Cexp.h> // i2c expander i/o_class header
+#include <AccelStepper.h>
+//#include <MultiStepper.h>
+
+//---------define pin-------------------------------------------------------------------
+//PWM:44,45  (2,3 per seriale, non usare)
+//I2C LCD pin 20 e 21
+//interrupts: pin 2,3,18,19 (20,21 per SDI)
+
+//encoder
+  //Magenta=1
+    int clkMagenta = 7;   //OK MEGA
+    int dtMagenta = 8;   //OK MEGA
+    int swMagenta = 9;   //OK MEGA
+    EncoderButton ebMagenta(dtMagenta, clkMagenta, swMagenta);
+    uint8_t magentaPosition_setting = 0;
+    uint8_t magentaPosition = 0;
+  //Yellow=2
+    int clkYellow = 4;   //OK MEGA
+    int dtYellow = 5;   //OK MEGA
+    int swYellow = 6;   //OK MEGA
+    EncoderButton ebYellow( dtYellow, clkYellow, swYellow);
+    uint8_t yellowPosition_setting = 0;
+    uint8_t yellowPosition = 0;
+  //Cyan=3
+    int clkCyan = 10;   //OK MEGA
+    int dtCyan = 11;   //OK MEGA
+    int swCyan = 12;   //OK MEGA
+    EncoderButton ebCyan( dtCyan, clkCyan, swCyan);
+    uint8_t cyanPosition_setting = 0;
+    uint8_t cyanPosition = 0;
+//Stepper motors
+  int pulMagenta = 33;   //OK MEGA
+  int dirMagenta = 34;   //OK MEGA
+  int enaMagenta = 35;   //OK MEGA
+  int pulYellow = 30;   //OK MEGA
+  int dirYellow = 31;   //OK MEGA
+  int enaYellow = 32;   //OK MEGA
+  int pulCyan = 36;   //OK MEGA
+  int dirCyan = 37;   //OK MEGA
+  int enaCyan = 38;   //OK MEGA
+  AccelStepper stepperMagenta(AccelStepper::DRIVER, pulMagenta, dirMagenta, 0xff, 0xff, false);
+  AccelStepper stepperYellow(AccelStepper::DRIVER, pulYellow, dirYellow, 0xff, 0xff, false);
+  AccelStepper stepperCyan(AccelStepper::DRIVER, pulCyan, dirCyan, 0xff, 0xff, false);
+  uint8_t microstep = 4;
+  bool Magenta_enabled = true; //activate or disactivaate the stepper
+  bool Yellow_enabled = true; //activate or disactivaate the stepper
+  bool Cyan_enabled = true; //activate or disactivaate the stepper
+  bool MagentaAtHome = false; //flag for homing
+  bool YellowAtHome = false; //flag for homing
+  bool CyanAtHome = false; //flag for homing
+  uint8_t maxSteps = 220;
+//limitswitch: Y,C,M are NO, HEAD is NC. All of them have pull-up R. 
+  uint8_t offset_zeroing = 10;
+  int limitMagenta = 3;   //OK MEGA
+  int limitYellow = 18;   //OK MEGA
+  int limitCyan = 2;   //OK MEGA
+  volatile bool limitMagentaTriggered = true;
+  volatile bool limitYellowTriggered = true;
+  volatile bool limitCyanTriggered = true;
+//Density filters
+  bool D0_3 = true;
+  bool D0_6 = true;
+//Density motors
+  int D0_3p1 = 49;   //OK MEGA
+  int D0_3p2 = 48;   //OK MEGA
+  int D0_6p1 = 51;   //OK MEGA
+  int D0_6p2 = 50;   //OK MEGA
+//shutter
+  float exposure = 0.0;
+  int shutterp1 = 52;   //OK MEGA
+  int shutterp2 = 53;   //OK MEGA
+//lamp
+  uint16_t lampHeatingTime = 2000; //tempo per scaldare la lampada prima di aprire lo shutter
+  int lampRelay = 26; 
+  uint16_t blinkInterval = 500; //tempo on off luce schermo
+  bool shutterState = false;
+  bool backlightState = false;
+  unsigned long previousMillis1 = 0; 
+//Head motor
+  int in1Head = 44;  
+  int in2Head = 45;
+  int limSwHead = 19;   //2 normally close limit switches connected in series
+  int FAST = 16;  
+  int UP = 17;   
+  int DOWN = 15; 
+  volatile bool limSwHeadTriggered = false;
+  enum Direction { FORWARD, BACKWARD };  // Direction enum and flag
+  Direction currentDirection = FORWARD; // Initialize with default direction
+  uint8_t PWM_fast =80; //valore percentuale di velocità del motore
+  uint8_t PWM_slow =40; //valore percentuale di velocità del motore
+  uint8_t PWM_min = 0; //min value of PWM
+  uint8_t PWM = 0 ;  //changing value of PWM
+  unsigned long zeroRef = 0;
+  uint16_t accel_interval = 10;//time in millis to change the speed in acceleration
+  uint8_t speedIncrease = 1; //valore percentuale di accelerazione del motore per ogni accel_interval
+  uint8_t speedDecrease = 10; //% of braking speed decrease for each accel_interval
+  uint16_t disengage_ls = 500;  //time in millis to disangage Limitswitch when hit
+  boolean fastState = false;
+  boolean upState = false;
+  boolean downState = false;
+
+//liquid crystal (1st parameter is  the I2C address,2nd nr of rows, 3rd nr of columns)I2C LCD pin 2 e 3 sono dedicati per i2c su scheda yun
+hd44780_I2Cexp lcd; // declare lcd object: auto locate & auto config expander chip
+uint8_t DisplayState = 0;
+
+//----FUNCTIONS----------------------------------------------------------------------------------------
+//INTERRUPTS
+// Interrupt Service Routine to stop motor when sensor is triggered - pin 0,1,3,7 (0 e 1 sconsigliati)
+  void magentaISR() {
+    limitMagentaTriggered = true;
+  }
+  void yellowISR() {
+    limitYellowTriggered = true;
+    }
+  void cyanISR() {
+    limitCyanTriggered = true;
+  }
+  void headISR() {
+    limSwHeadTriggered = true;
+  }
+//handle the 'clicked' event (Can be called anything but requires EncoderButton& as its only parameter.)
+  void onEbMagentaClicked(EncoderButton& ebMagenta) {
+    if (DisplayState == 0) {
+      magentaPosition = magentaPosition_setting;
+      moveMotorMagenta();
+      updatePositionLCD();
+    } else if (DisplayState == 1) {
+      moveD0_3();
+      updatePositionLCD();
+    }
+  }
+  void onEbYellowClicked(EncoderButton& ebYellow) {
+    if (DisplayState == 0) {
+      yellowPosition = yellowPosition_setting;
+      moveMotorYellow();
+      updatePositionLCD();
+      } else if (DisplayState == 2) {
+      moveShutter();
+    }
+  }
+  void onEbCyanClicked(EncoderButton& ebCyan) {
+    if (DisplayState == 0) {
+      cyanPosition = cyanPosition_setting;
+      moveMotorCyan();
+      updatePositionLCD();
+    } else if (DisplayState == 1) {
+      moveD0_6();
+      updatePositionLCD();
+    }
+  }
+//handle the 'encoder' event
+  void onEbMagentaEncoder(EncoderButton& ebMagenta) {
+    if (DisplayState == 0) {
+      magentaPosition_setting += ebMagenta.increment();
+      if (magentaPosition_setting > (maxSteps + 1)) {
+        magentaPosition_setting = maxSteps;
+      } else if (magentaPosition_setting == (maxSteps + 1)) {
+        magentaPosition_setting = 0;
+      }
+      updateSettingLCD();
+    } else {}
+  }
+  void onEbMagentaEncoder_fast(EncoderButton& ebMagenta) {
+    if (DisplayState == 0) {
+      magentaPosition_setting += 10 * ebMagenta.increment();
+      if (magentaPosition_setting > (maxSteps + 10)) {
+        magentaPosition_setting = maxSteps;
+      } else if (magentaPosition_setting == (maxSteps + 10)) {
+        magentaPosition_setting = 0;
+      }
+      updateSettingLCD();
+    } else {}
+  }
+  void onEbYellowEncoder(EncoderButton& ebYellow) {
+    if (DisplayState == 0) {
+      yellowPosition_setting += ebYellow.increment();
+      if (yellowPosition_setting > (maxSteps + 1)) {
+        yellowPosition_setting = maxSteps;
+      } else if (yellowPosition_setting == (maxSteps + 1)) {
+        yellowPosition_setting = 0;
+      }
+      updateSettingLCD();
+    } else if (DisplayState == 2) {
+      exposure += ebYellow.increment() * 0.1;
+      updateSettingLCD();
+    }
+  }
+  void onEbYellowEncoder_fast(EncoderButton& ebYellow) {
+    if (DisplayState == 0) {
+      yellowPosition_setting += 10 * ebYellow.increment();
+      if (yellowPosition_setting > (maxSteps + 10)) {
+        yellowPosition_setting = maxSteps;
+      } else if (yellowPosition_setting == (maxSteps + 10)) {
+        yellowPosition_setting = 0;
+      }
+      updateSettingLCD();
+    } else if (DisplayState == 2)  {
+      exposure += ebYellow.increment();
+      updateSettingLCD();
+    }
+  }
+  void onEbCyanEncoder(EncoderButton& ebCyan) {
+    if (DisplayState == 0) {
+      cyanPosition_setting += ebCyan.increment();
+      if (cyanPosition_setting > (maxSteps + 1)) {
+        cyanPosition_setting = maxSteps;
+      } else if (cyanPosition_setting == (maxSteps + 1)) {
+        cyanPosition_setting = 0;
+      }
+      updateSettingLCD();
+    } else {}
+  }
+  void onEbCyanEncoder_fast(EncoderButton& ebCyan) {
+    if (DisplayState == 0) {
+      cyanPosition_setting += 10 * ebCyan.increment();
+      if (cyanPosition_setting > (maxSteps + 10)) {
+        cyanPosition_setting = maxSteps;
+      } else if (cyanPosition_setting == (maxSteps + 10)) {
+        cyanPosition_setting = 0;
+      }
+      updateSettingLCD();
+    } else {
+    }
+  }
+// write setting values on LCD screen
+  void updateSettingLCD() {
+  if (DisplayState == 0) {
+    lcd.setCursor(2, 2);
+    lcd.print("   ");
+    lcd.setCursor(2, 2);
+    lcd.print(yellowPosition_setting);
+    lcd.setCursor(8, 2);
+    lcd.print("   ");
+    lcd.setCursor(8, 2);
+    lcd.print(magentaPosition_setting);
+    lcd.setCursor(14, 2);
+    lcd.print("   ");
+    lcd.setCursor(14, 2);
+    lcd.print(cyanPosition_setting);
+  } else if (DisplayState == 2) {
+    lcd.setCursor(8, 2);
+    lcd.print("    ");
+    lcd.setCursor(8, 2);
+    lcd.print(exposure, 1);
+  }
+}
+// write position values on LCD screen
+  void updatePositionLCD() {
+    if (DisplayState == 0) {
+      lcd.setCursor(1, 3);
+      lcd.print("     ");
+      lcd.setCursor(1, 3);
+      lcd.print("(");
+      if (Yellow_enabled){
+      lcd.print(stepperYellow.currentPosition() / microstep);
+      }else{
+      lcd.print("OFF");  
+      }
+      lcd.print(")");
+      lcd.setCursor(8, 3);
+      lcd.print("     ");
+      lcd.setCursor(8, 3);
+      lcd.print("(");
+      if (Magenta_enabled){
+      lcd.print(stepperMagenta.currentPosition() / microstep);
+      }else{
+      lcd.print("OFF");  
+      }
+      lcd.print(")");
+      lcd.setCursor(14, 3);
+      lcd.print("     ");
+      lcd.setCursor(14, 3);
+      lcd.print("(");
+      if (Cyan_enabled){
+      lcd.print(stepperCyan.currentPosition() / microstep);
+      }else{
+      lcd.print("OFF");  
+      }
+      lcd.print(")") ;
+    } else if (DisplayState == 1) {
+      if (D0_3 == true) {
+        lcd.setCursor(8, 3);
+        lcd.print("   ");
+        lcd.setCursor(8, 3);
+        lcd.print("OFF");
+      } else {
+        lcd.setCursor(8, 3);
+        lcd.print("ON ");
+      }
+      if (D0_6 == true) {
+        lcd.setCursor(15, 3);
+        lcd.print("   ");
+        lcd.setCursor(15, 3);
+        lcd.print("OFF");
+      } else {
+        lcd.setCursor(15, 3);
+        lcd.print("ON ");
+      }
+    }
+  }
+  void onButtonYellowLongPress(EncoderButton& ebYellow) {
+    if (DisplayState == 0) {
+      DisplayState = 1;
+      lcd.clear();
+      lcd.setCursor(1, 0);
+      lcd.print("  FILTRI DENSITA'  ");
+      lcd.setCursor(8, 1);
+      lcd.print("0.3D "); lcd.write(124); lcd.print(" 0.6D");
+      lcd.setCursor(8, 2);
+      lcd.print("     "); lcd.write(124); lcd.print("     ");
+      lcd.setCursor(8, 3);
+      lcd.print("     "); lcd.write(124); lcd.print("     ");
+      updatePositionLCD();
+    } else if (DisplayState == 2) {
+      DisplayState = 0;
+      lcd.clear();
+      lcd.setCursor(3, 0);
+      lcd.print("FILTRI COLORE");
+      lcd.setCursor(0, 1);
+      lcd.print("Yellow Magenta Cyan");
+      updatePositionLCD();
+      updateSettingLCD();
+    } else if (DisplayState == 1) {
+      DisplayState = 2;
+      lcd.clear();
+      lcd.setCursor(1, 0);
+      lcd.print("TIMER ESPOSIZIONE");
+      lcd.setCursor(4, 1);
+      lcd.print("tempo in sec");
+      updateSettingLCD();
+    }
+  }
+//switch on lamp
+  void onButtonCyanLongPress(EncoderButton& ebCyan) {
+if (shutterState == LOW){
+digitalWrite(shutterp1, HIGH);
+digitalWrite(shutterp2, LOW);
+digitalWrite(lampRelay, HIGH);
+delay(300);
+digitalWrite(shutterp1, LOW);
+shutterState = HIGH;
+}else{
+digitalWrite(shutterp1, LOW);
+digitalWrite(shutterp2, HIGH);
+digitalWrite(lampRelay, LOW);
+delay(300);
+digitalWrite(shutterp2, LOW);
+shutterState = LOW; 
+lcd.backlight();
+}
+}
+//move motors color filters
+  void moveMotorMagenta() {
+    if (Magenta_enabled && magentaPosition == 0){
+      MagentaHoming();
+    }
+    else if (Magenta_enabled && MagentaAtHome){
+      MagentaZeroing();
+    }
+    if (Magenta_enabled && magentaPosition != 0){
+      stepperMagenta.moveTo(magentaPosition * microstep);
+      // Move the stepper to the target position and wait until it reaches it
+      unsigned long previousMillis = 0;
+      const long Interval = 500;
+      while (stepperMagenta.isRunning()) {
+        stepperMagenta.run();
+        unsigned long currentMillis = millis();
+        if (currentMillis - previousMillis >= Interval) {
+          previousMillis = currentMillis;
+          updatePositionLCD();
+        }
+      }
+    updatePositionLCD();
+    }
+  }
+  void moveMotorYellow() {
+    if (Yellow_enabled && yellowPosition == 0){
+      YellowHoming();
+    }
+    else if (Yellow_enabled && YellowAtHome){
+      YellowZeroing();
+    }
+    if (Yellow_enabled && yellowPosition != 0){
+      stepperYellow.moveTo(yellowPosition * microstep);
+      // Move the stepper to the target position and wait until it reaches it
+      unsigned long previousMillis = 0;
+      const long Interval = 500;
+      while (stepperYellow.isRunning()) {
+        stepperYellow.run();
+        unsigned long currentMillis = millis();
+        if (currentMillis - previousMillis >= Interval) {
+          previousMillis = currentMillis;
+          updatePositionLCD();
+        }
+      }
+    updatePositionLCD();
+    }
+  }
+  void moveMotorCyan() {
+    if (Cyan_enabled && cyanPosition == 0){
+      CyanHoming();
+    }
+    else if (Cyan_enabled && CyanAtHome){
+      CyanZeroing();
+    }
+    if (Cyan_enabled && cyanPosition != 0){
+      stepperCyan.moveTo(cyanPosition * microstep);
+      // Move the stepper to the target position and wait until it reaches it
+      unsigned long previousMillis = 0;
+      const long Interval = 500;
+      while (stepperCyan.isRunning()) {
+        stepperCyan.run();
+        unsigned long currentMillis = millis();
+        if (currentMillis - previousMillis >= Interval) {
+          previousMillis = currentMillis;
+          updatePositionLCD();
+        }
+      }
+    updatePositionLCD();
+    }
+  }
+//move density filters
+  void moveD0_3() {
+    if (D0_3 == false) {
+      digitalWrite(D0_3p1, HIGH);
+      digitalWrite(D0_3p2, LOW);
+      delay(300);
+      digitalWrite(D0_3p1, LOW);
+      D0_3 = true;
+    } else {
+      digitalWrite(D0_3p1, LOW);
+      digitalWrite(D0_3p2, HIGH);
+      delay(300);
+      digitalWrite(D0_3p2, LOW);
+      D0_3 = false;
+    }
+  }
+  void moveD0_6() {
+    if (D0_6 == false) {
+      digitalWrite(D0_6p1, HIGH);
+      digitalWrite(D0_6p2, LOW);
+      delay(300);
+      digitalWrite(D0_6p1, LOW);
+      D0_6 = true;
+    } else {
+      digitalWrite(D0_6p1, LOW);
+      digitalWrite(D0_6p2, HIGH);
+      delay(300);
+      digitalWrite(D0_6p2, LOW);
+      D0_6 = false;
+    }
+  }
+//move shutter
+void moveShutter() {
+  digitalWrite(lampRelay, HIGH);
+  delay(lampHeatingTime);
+  lcd.setCursor(0, 3);
+  for (int i = 0; i < 20; i++) {
+    lcd.print((char)219);
+  }
+  digitalWrite(shutterp1, HIGH);
+  digitalWrite(shutterp2, LOW);
+  delay(exposure * 1000);
+  digitalWrite(shutterp1, LOW);
+  digitalWrite(shutterp2, HIGH);
+  lcd.setCursor(0, 3);
+  for (int i = 0; i < 20; i++) {
+    lcd.print(" ");
+  }
+  delay(200);
+  digitalWrite(lampRelay, LOW);
+  digitalWrite(shutterp2, LOW);
+}
+//move HEAD
+  void HeadForward(uint8_t PWM) { 
+   analogWrite(in1Head, 255);
+   analogWrite(in2Head,(255 * (100 - PWM)) / 100); //inverse of the PWM in range 0-255
+   currentDirection = FORWARD; // Set direction flag
+  }
+  void HeadBackward(uint8_t PWM) {
+   analogWrite(in1Head,(255 * (100 - PWM))/ 100); //inverse of the PWM in range 0-255
+   analogWrite(in2Head, 255);
+   currentDirection = BACKWARD; // Set direction flag 
+  }
+  void HeadStop() {
+   digitalWrite(in1Head,HIGH);
+   digitalWrite(in2Head, HIGH); 
+   PWM=PWM_min; 
+  }
+  void HeadCoast() {
+   digitalWrite(in1Head,LOW);
+   digitalWrite(in2Head, LOW);
+   PWM=PWM_min; 
+  }
+  void limSwHit() {
+   HeadStop();
+   if(currentDirection == FORWARD){
+   HeadBackward(PWM_slow);
+   }
+   else if (currentDirection == BACKWARD){
+   HeadForward(PWM_slow);
+   }
+  }
+//filters Homing
+  void MagentaHoming(){
+    limitMagentaTriggered=!digitalRead(limitMagenta);//inverted logic due to pullup
+    if (!limitMagentaTriggered){
+      stepperMagenta.enableOutputs();
+      stepperMagenta.moveTo(-300*microstep);
+      while(!limitMagentaTriggered) {
+        stepperMagenta.run();
+      }  
+    }
+    stepperMagenta.setCurrentPosition(0); // Set current position to zero
+    stepperMagenta.disableOutputs();
+    MagentaAtHome = true;
+  }
+  void YellowHoming(){
+    limitYellowTriggered = !digitalRead(limitYellow);//inverted logic due to pullup
+    if (!limitYellowTriggered){
+      stepperYellow.enableOutputs();
+      stepperYellow.moveTo(-300*microstep);
+      while(!limitYellowTriggered) {
+        stepperYellow.run();
+      }  
+    }
+    stepperYellow.setCurrentPosition(0); // Set current position to zero
+    stepperYellow.disableOutputs();
+    YellowAtHome = true;
+  }
+  void CyanHoming(){
+    limitCyanTriggered = !digitalRead(limitCyan);//inverted logic due to pullup
+    if (!limitCyanTriggered){
+      stepperCyan.enableOutputs();
+      stepperCyan.moveTo(-300*microstep);
+      while(!limitCyanTriggered) {
+        stepperCyan.run();
+      }  
+    }
+  stepperCyan.setCurrentPosition(0); // Set current position to zero
+  stepperCyan.disableOutputs();
+  CyanAtHome = true;
+  }
+
+//filters Zeroing
+  void MagentaZeroing(){
+       limitMagentaTriggered = !digitalRead(limitMagenta);//inverted logic due to pullup
+       stepperMagenta.setCurrentPosition(0); // Set current position to zero
+      stepperMagenta.enableOutputs();
+      SpeedSettingsZeroing();
+      stepperMagenta.setCurrentPosition(0); // Set current position to zero
+      stepperMagenta.moveTo(offset_zeroing * microstep); // disengage LS  moving offset_zeroing*1.8°    
+      while (stepperMagenta.isRunning()){
+        stepperMagenta.run();}
+      limitMagentaTriggered = !digitalRead(limitMagenta);//inverted logic due to pullup
+      stepperMagenta.moveTo(-offset_zeroing * microstep); // re-engage LS  moving offset_zeroing*1.8°
+        while (stepperMagenta.isRunning()){     
+        if(limitMagentaTriggered){
+         stepperMagenta.setAcceleration(10*microstep); // Set to higher acceleration to have a fast stop
+         stepperMagenta.stop();  // Immediately stop the motor
+         stepperMagenta.runToPosition();
+         break; 
+        }
+        stepperMagenta.run();
+        }
+      SpeedSettingsZeroing();  
+      stepperMagenta.setCurrentPosition(0); // Set current position to zero
+      stepperMagenta.moveTo(3 * microstep); // make sure LS is disengaged moving 2*1.8°
+      while (stepperMagenta.isRunning()){
+        stepperMagenta.run();}
+      limitMagentaTriggered = !digitalRead(limitMagenta);//inverted logic due to pullup
+      MagentaAtHome = false;
+      stepperMagenta.setCurrentPosition(0); // Set current position to zero
+      SpeedSettings();   
+  }
+  void YellowZeroing(){
+      limitYellowTriggered = !digitalRead(limitYellow);//inverted logic due to pullup
+      stepperYellow.enableOutputs();
+      SpeedSettingsZeroing();
+      stepperYellow.moveTo(offset_zeroing * microstep); // disengage LS  moving offset_zeroing*1.8°    
+      while (stepperYellow.isRunning()){
+        stepperYellow.run();}
+      limitYellowTriggered = !digitalRead(limitYellow);//inverted logic due to pullup
+      stepperYellow.moveTo(-offset_zeroing * microstep); // re-engage LS  moving offset_zeroing*1.8°
+        while (stepperYellow.isRunning()){     
+        if(limitYellowTriggered){
+         stepperYellow.setAcceleration(10*microstep); // Set to higher acceleration to have a fast stop
+         stepperYellow.stop();  // Immediately stop the motor
+         stepperYellow.runToPosition();
+         break; 
+        }
+        stepperYellow.run();
+        }
+      SpeedSettingsZeroing();  
+      stepperYellow.setCurrentPosition(0); // Set current position to zero
+      stepperYellow.moveTo(3 * microstep); // make sure LS is disengaged moving 2*1.8°
+      while (stepperYellow.isRunning()){
+        stepperYellow.run();}
+      limitYellowTriggered = !digitalRead(limitYellow);//inverted logic due to pullup
+      YellowAtHome = false;
+      stepperYellow.setCurrentPosition(0); // Set current position to zero
+      SpeedSettings();
+  }
+  void CyanZeroing(){
+    limitCyanTriggered = !digitalRead(limitCyan);//inverted logic due to pullup
+      stepperCyan.enableOutputs();
+      SpeedSettingsZeroing();
+      stepperCyan.moveTo(offset_zeroing * microstep); // disengage LS  moving offset_zeroing*1.8°    
+      while (stepperCyan.isRunning()){
+        stepperCyan.run();}
+      limitCyanTriggered = !digitalRead(limitCyan);//inverted logic due to pullup
+      stepperCyan.moveTo(-offset_zeroing * microstep); // re-engage LS  moving offset_zeroing*1.8°
+        while (stepperCyan.isRunning()){     
+        if(limitCyanTriggered){
+         stepperCyan.setAcceleration(10*microstep); // Set to higher acceleration to have a fast stop
+         stepperCyan.stop();  // Immediately stop the motor
+         stepperCyan.runToPosition();
+         break; 
+        }
+        stepperCyan.run();
+        }
+      SpeedSettingsZeroing();  
+      stepperCyan.setCurrentPosition(0); // Set current position to zero
+      stepperCyan.moveTo(3 * microstep); // make sure LS is disengaged moving 2*1.8°
+      while (stepperCyan.isRunning()){
+        stepperCyan.run();}
+      limitCyanTriggered = !digitalRead(limitCyan);//inverted logic due to pullup
+      CyanAtHome = false;
+      stepperCyan.setCurrentPosition(0); // Set current position to zero
+      SpeedSettings();
+  }
+//filters Settings
+  void SpeedSettingsZeroing(){
+    stepperMagenta.setMaxSpeed(10*microstep);   // Set the max speed (steps per second)to 18°/s (20sec for one complete revolution)
+    stepperMagenta.setAcceleration(5*microstep); // Set the acceleration
+    stepperYellow.setMaxSpeed(10*microstep);   // Set the max speed (steps per second)
+    stepperYellow.setAcceleration(5*microstep); // Set the acceleration
+    stepperCyan.setMaxSpeed(10*microstep);   // Set the max speed (steps per second)
+    stepperCyan.setAcceleration(5*microstep); // Set the acceleration
+  }
+  void SpeedSettings(){
+    stepperMagenta.setMaxSpeed(50*microstep);   // Set the max speed (steps per second)to 72°/s (5sec for one complete revolution)
+    stepperYellow.setMaxSpeed(50*microstep);   // Set the max speed (steps per second)
+    stepperCyan.setMaxSpeed(50*microstep);   // Set the max speed (steps per second)
+    stepperMagenta.setAcceleration(20*microstep); // Set the acceleration
+    stepperYellow.setAcceleration(20*microstep); // Set the acceleration
+    stepperCyan.setAcceleration(20*microstep); // Set the acceleration  
+  }
+
+//--------------------------------------------------------------------------------------------
+void setup() {
+  delay(15000);
+  //Serial.begin(9600);
+//initialize lcd screen
+  lcd.begin(20, 4);
+//lower clock speed I2C in order to have less data loss in the 2m cable, standard is 100kHz
+  //  TWBR = 152;      // 25KHz
+    Wire.begin ();
+    TWBR = 78;        //50KHz
+    TWSR |= bit (TWPS0);
+
+// turn on the backlight
+  lcd.backlight();
+// tell the screen to write
+  lcd.setCursor(3, 0);
+  lcd.print("FILTRI COLORE");
+  lcd.setCursor(0, 1);
+  lcd.print("Yellow Magenta Cyan");
+
+//encoder
+  pinMode(clkMagenta, INPUT_PULLUP);
+  pinMode(dtMagenta, INPUT_PULLUP);
+  pinMode(swMagenta, INPUT_PULLUP);
+  pinMode(clkYellow, INPUT_PULLUP);
+  pinMode(dtYellow, INPUT_PULLUP);
+  pinMode(swYellow, INPUT_PULLUP);
+  pinMode(clkCyan, INPUT_PULLUP);
+  pinMode(dtCyan, INPUT_PULLUP);
+  pinMode(swCyan, INPUT_PULLUP);
+
+//Link the event(s) to your function
+  ebMagenta.setClickHandler(onEbMagentaClicked);
+  ebMagenta.setEncoderHandler(onEbMagentaEncoder);
+  ebMagenta.setEncoderPressedHandler(onEbMagentaEncoder_fast);
+  ebYellow.setClickHandler(onEbYellowClicked);
+  ebYellow.setEncoderHandler(onEbYellowEncoder);
+  ebYellow.setEncoderPressedHandler(onEbYellowEncoder_fast);
+  ebYellow.setLongPressHandler(onButtonYellowLongPress, false);
+  ebCyan.setClickHandler(onEbCyanClicked);
+  ebCyan.setEncoderHandler(onEbCyanEncoder);
+  ebCyan.setEncoderPressedHandler(onEbCyanEncoder_fast);
+  ebCyan.setLongPressHandler(onButtonCyanLongPress, false);
+//stepper
+  stepperMagenta.setPinsInverted(false, false, false);
+  stepperYellow.setPinsInverted(true, false, false);
+  stepperCyan.setPinsInverted(false, false, false);
+  stepperMagenta.setEnablePin(enaMagenta);
+  stepperYellow.setEnablePin(enaYellow);
+  stepperCyan.setEnablePin(enaCyan);
+  stepperMagenta.disableOutputs();
+  stepperYellow.disableOutputs();
+  stepperCyan.disableOutputs();
+  Magenta_enabled? stepperMagenta.enableOutputs() : stepperMagenta.disableOutputs();
+  Yellow_enabled? stepperYellow.enableOutputs() : stepperYellow.disableOutputs();
+  Cyan_enabled? stepperCyan.enableOutputs() : stepperCyan.disableOutputs(); 
+  stepperMagenta.setMinPulseWidth(20);
+  stepperYellow.setMinPulseWidth(20);
+  stepperCyan.setMinPulseWidth(20);
+  SpeedSettingsZeroing();
+//limitswitch
+  pinMode(limitMagenta, INPUT_PULLUP);
+  pinMode(limitYellow, INPUT_PULLUP);
+  pinMode(limitCyan, INPUT_PULLUP);
+  pinMode(limSwHead, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(limitMagenta), magentaISR, FALLING); // Trigger on LOW signal
+  attachInterrupt(digitalPinToInterrupt(limitYellow), yellowISR, FALLING); // Trigger on LOW signal
+  attachInterrupt(digitalPinToInterrupt(limitCyan), cyanISR, FALLING); // Trigger on LOW signal
+  attachInterrupt(digitalPinToInterrupt(limSwHead), headISR, RISING); // Trigger on HIGH signal
+
+//Density motors
+  pinMode (D0_3p1, OUTPUT);
+  pinMode (D0_3p2, OUTPUT);
+  pinMode (D0_6p1, OUTPUT);
+  pinMode (D0_6p2, OUTPUT);
+//Lamp
+  pinMode (lampRelay, OUTPUT);
+//head motor
+  pinMode(in1Head, OUTPUT);
+  pinMode(in2Head, OUTPUT);
+  PWM=PWM_min;
+//Buttons
+  pinMode(FAST,INPUT_PULLUP);
+  pinMode(UP,INPUT_PULLUP);
+  pinMode(DOWN,INPUT_PULLUP);
+// Homing
+  lcd.setCursor(3, 3);
+  lcd.print("azzeramento");
+  limitMagentaTriggered = !digitalRead(limitMagenta);//inverted logic due to pullup
+  limitYellowTriggered = !digitalRead(limitYellow);//inverted logic due to pullup
+  limitCyanTriggered = !digitalRead(limitCyan);//inverted logic due to pullup
+  if (Magenta_enabled){
+  MagentaHoming();}
+  if (Yellow_enabled){
+  YellowHoming();}
+  if (Cyan_enabled){
+  CyanHoming();}
+//clear LCD
+  lcd.setCursor(3, 3);
+  lcd.print("                    ");  
+  updatePositionLCD();
+}
+void loop() {
+  ebMagenta.update();
+  ebYellow.update();
+  ebCyan.update();
+  if (shutterState == HIGH){
+  unsigned long currentMillis1 = millis();
+  // Check if it's time to toggle the backlight
+  if (currentMillis1 - previousMillis1 >= blinkInterval) {
+    previousMillis1 = currentMillis1;
+    if (backlightState) {
+      lcd.noBacklight();   
+    } else {
+      lcd.backlight();     
+    }
+    backlightState = !backlightState;
+  }
+  }
+//Check Head limit switches
+  if(limSwHeadTriggered){
+  unsigned long initialMillis = millis();
+  limSwHit();
+  while(millis()- initialMillis<= disengage_ls){   
+    }
+  HeadCoast();
+  limSwHeadTriggered=digitalRead(limSwHead);
+  }
+// read the state of the pushbutton value, inverted due to pullup:
+  upState = !digitalRead(UP);
+  downState = !digitalRead(DOWN);
+  fastState = !digitalRead(FAST);
+  if (upState && !downState && (millis()- zeroRef >= accel_interval)){
+    if (PWM < (fastState ? PWM_fast : PWM_slow)) {
+     PWM += speedIncrease;
+    }
+    HeadForward(PWM);
+    zeroRef = millis();
+  } 
+  else if(!upState && downState && (millis()- zeroRef >= accel_interval)) {
+    if (PWM < (fastState ? PWM_fast : PWM_slow)) {
+     PWM += speedIncrease;
+    }
+    HeadBackward(PWM);
+    zeroRef = millis();
+  }
+  else if((!upState && !downState)||(upState && downState) && (millis()- zeroRef >= accel_interval)){
+   if (PWM > 0) {
+     PWM -= speedDecrease;
+     if(currentDirection==FORWARD){HeadForward(PWM);}
+     if(currentDirection==BACKWARD){HeadBackward(PWM);}
+    }    
+   else if (PWM == 0){
+   HeadCoast();
+  }
+  zeroRef = millis();
+  }
+}
