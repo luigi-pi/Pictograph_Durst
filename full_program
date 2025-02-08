@@ -5,7 +5,7 @@
 #include <EncoderButton.h>
 #include <Wire.h>
 #include <hd44780.h>                       // main hd44780 header
-#include <hd44780ioClass/hd44780_I2Cexp.h> // i2c expander i/o_class header
+#include <hd44780ioClass/hd44780_I2Cexp.h> // i2c expander i/o class header
 #include <AccelStepper.h>
 //#include <MultiStepper.h>
 
@@ -99,9 +99,9 @@
   uint8_t PWM_min = 0; //min value of PWM
   uint8_t PWM = 0 ;  //changing value of PWM
   unsigned long zeroRef = 0;
-  uint16_t accel_interval = 10;//time in millis to change the speed in acceleration
+  uint16_t accel_interval = 20;//time in millis to change the speed in acceleration
   uint8_t speedIncrease = 1; //valore percentuale di accelerazione del motore per ogni accel_interval
-  uint8_t speedDecrease = 10; //% of braking speed decrease for each accel_interval
+  uint8_t speedDecrease = 20; //% of braking speed decrease for each accel_interval
   uint16_t disengage_ls = 500;  //time in millis to disangage Limitswitch when hit
   boolean fastState = false;
   boolean upState = false;
@@ -313,11 +313,11 @@ uint8_t DisplayState = 0;
       lcd.setCursor(1, 0);
       lcd.print("  FILTRI DENSITA'  ");
       lcd.setCursor(8, 1);
-      lcd.print("0.3D "); lcd.write(124); lcd.print(" 0.6D");
+      lcd.print("0.3D "); lcd.print((char)197); lcd.print(" 0.6D");
       lcd.setCursor(8, 2);
-      lcd.print("     "); lcd.write(124); lcd.print("     ");
+      lcd.print("     "); lcd.print((char)197); lcd.print("     ");
       lcd.setCursor(8, 3);
-      lcd.print("     "); lcd.write(124); lcd.print("     ");
+      lcd.print("     "); lcd.print((char)197); lcd.print("     ");
       updatePositionLCD();
     } else if (DisplayState == 2) {
       DisplayState = 0;
@@ -657,8 +657,7 @@ void moveShutter() {
 
 //--------------------------------------------------------------------------------------------
 void setup() {
-  delay(15000);
-  //Serial.begin(9600);
+  Serial.begin(9600);
 //initialize lcd screen
   lcd.begin(20, 4);
 //lower clock speed I2C in order to have less data loss in the 2m cable, standard is 100kHz
@@ -669,6 +668,11 @@ void setup() {
 
 // turn on the backlight
   lcd.backlight();
+  lcd.setCursor(5, 1);
+  lcd.print("CARICAMENTO");
+  delay(15000);
+  lcd.setCursor(3, 1);
+  lcd.print("           ");
 // tell the screen to write
   lcd.setCursor(3, 0);
   lcd.print("FILTRI COLORE");
@@ -802,14 +806,13 @@ void loop() {
     zeroRef = millis();
   }
   else if((!upState && !downState)||(upState && downState) && (millis()- zeroRef >= accel_interval)){
-   if (PWM > 0) {
+   while (PWM > 0) {
      PWM -= speedDecrease;
      if(currentDirection==FORWARD){HeadForward(PWM);}
      if(currentDirection==BACKWARD){HeadBackward(PWM);}
+     if(PWM<20){PWM=0;}
     }    
-   else if (PWM == 0){
    HeadCoast();
-  }
   zeroRef = millis();
   }
 }
